@@ -95,6 +95,8 @@ async function fetchForecast() {
   }
   const byDate = {};
   data.daily.time.forEach((date, i) => {
+    // Síðasti dagur spárinnar kemur stundum með null-gildum — sleppum honum
+    if (data.daily.temperature_2m_max[i] == null || data.daily.weather_code[i] == null) return;
     byDate[date] = {
       code: data.daily.weather_code[i],
       tempMax: data.daily.temperature_2m_max[i],

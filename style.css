@@ -112,6 +112,22 @@ main { max-width: 1180px; margin: 0 auto; padding: 0.6rem 1rem 3rem; }
 }
 .retry-btn:active { transform: scale(0.96); }
 
+/* Hleðslugrind á meðan spáin er sótt */
+.skel {
+  display: inline-block;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05) 25%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.05) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+  border-radius: 8px;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
+.skel-emoji { width: 44px; height: 44px; border-radius: 12px; }
+.skel-temp { width: 72px; height: 24px; margin-bottom: 6px; }
+.skel-sub { width: 52px; height: 12px; }
+.skel-pill { width: 88px; height: 26px; border-radius: 999px; }
+
 .day-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

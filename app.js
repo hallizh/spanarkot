@@ -69,16 +69,21 @@ function formatDate(iso) {
 // ---------- Veðurgögn ----------
 
 async function fetchJSON(url, tries = 3) {
-  let delay = 600;
+  let delay = 500;
   for (let i = 0; i < tries; i++) {
+    // Hangandi tenging (t.d. á reiki) fær 15 sek áður en reynt er aftur
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: ctrl.signal });
       if (!res.ok) throw new Error("HTTP " + res.status);
       return await res.json();
     } catch (err) {
       if (i === tries - 1) throw err;
       await new Promise((r) => setTimeout(r, delay));
       delay *= 2;
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
@@ -280,7 +285,19 @@ function renderDay(day, suggestion) {
   if (day.isToday) classes.push("today");
   if (day.isDeparture) classes.push("departure");
 
-  let weatherBlock = "";
+  let weatherBlock = `
+      <div class="weather-main">
+        <span class="skel skel-emoji"></span>
+        <div class="weather-temps">
+          <span class="skel skel-temp"></span>
+          <span class="skel skel-sub"></span>
+        </div>
+      </div>
+      <div class="meta-row">
+        <span class="skel skel-pill"></span>
+        <span class="skel skel-pill"></span>
+        <span class="skel skel-pill"></span>
+      </div>`;
   if (w) {
     weatherBlock = `
       <div class="weather-main">
@@ -327,6 +344,50 @@ function renderDay(day, suggestion) {
 }
 
 // ---------- Keyrsla ----------
+// Síðan birtist strax: síðasta spá úr geymslu (eða hleðslugrind í fyrsta
+// skipti) á meðan fersk spá er sótt í bakgrunni og uppfærð hljóðlega.
+
+function buildDays(dates, forecast, marine, today, skeleton) {
+  let lastSea = null;
+  return dates.map((date) => {
+    const real = forecast[date];
+    const m = marine[date];
+    if (m && m.sea != null) lastSea = m.sea;
+    return {
+      date,
+      weather: skeleton ? null : real || { ...TYPICAL },
+      approximate: !skeleton && !real,
+      // Sjávarhiti: alvöru gögn eða síðasta þekkta gildi — aldrei ágiskun nema á fjarlægum dögum
+      sea: m && m.sea != null ? m.sea : lastSea != null ? lastSea : skeleton || real ? null : TYPICAL.sea,
+      wave: m ? m.wave : null, // engin öldu-ágiskun út fyrir spána
+      isToday: date === today,
+      isDeparture: date === DEPARTURE,
+    };
+  });
+}
+
+function renderAll(grid, days) {
+  const suggestions = buildSuggestions(days);
+  grid.innerHTML = days.map((d, i) => renderDay(d, suggestions[i])).join("");
+}
+
+function updateSeaChip(todayDay) {
+  const wi = waveInfo(todayDay.wave);
+  document.getElementById("chip-sea").textContent =
+    todayDay.sea != null
+      ? `🌊 Sjórinn í dag: ${Math.round(todayDay.sea)}°C` +
+        (wi ? ` · öldur ${todayDay.wave.toFixed(1).replace(".", ",")} m` : "")
+      : "🌊 Sjór: …";
+}
+
+function setStatus(status, html, isError) {
+  status.classList.remove("hidden", "error");
+  if (isError) status.classList.add("error");
+  if (html == null) status.classList.add("hidden");
+  else status.innerHTML = html;
+}
+
+const RETRY_BTN = '<button class="retry-btn" id="retry">Reyna aftur</button>';
 
 async function init() {
   const status = document.getElementById("status");
@@ -345,90 +406,55 @@ async function init() {
   document.getElementById("chip-days").textContent =
     daysLeft === 1 ? "⏳ 1 dagur eftir" : `⏳ ${daysLeft} dagar eftir`;
 
-  let forecast = {};
-  let marine = {};
-  let source = "live";
-  let marineFailed = false;
-  let cacheTime = null;
-
-  try {
-    forecast = await fetchForecast();
-    try {
-      marine = await fetchMarine();
-    } catch (err) {
-      marineFailed = true;
-    }
-    if (!marineFailed) saveCache(forecast, marine);
-  } catch (err) {
-    const cached = loadCache();
-    if (cached) {
-      forecast = cached.forecast;
-      marine = cached.marine || {};
-      source = "cache";
-      cacheTime = cached.ts;
-    } else {
-      source = "none";
-    }
+  // 1. Birta strax það sem til er
+  const cached = loadCache();
+  if (cached) {
+    const days = buildDays(dates, cached.forecast, cached.marine || {}, today, false);
+    updateSeaChip(days[0]);
+    renderAll(grid, days);
+    setStatus(status, "Uppfæri veðurspá…");
+  } else {
+    renderAll(grid, buildDays(dates, {}, {}, today, true));
+    setStatus(status, "Sæki veðurspá fyrir Los Dolses…");
   }
 
-  let lastSea = null;
-  const days = dates.map((date) => {
-    const real = forecast[date];
-    const m = marine[date];
-    if (m && m.sea != null) lastSea = m.sea;
-    return {
-      date,
-      weather: real || { ...TYPICAL },
-      approximate: !real,
-      // Sjávarhiti: alvöru gögn eða síðasta þekkta gildi — aldrei ágiskun nema á fjarlægum dögum
-      sea: m && m.sea != null ? m.sea : lastSea != null ? lastSea : real ? null : TYPICAL.sea,
-      wave: m ? m.wave : null, // engin öldu-ágiskun út fyrir spána
-      isToday: date === today,
-      isDeparture: date === DEPARTURE,
-    };
-  });
+  // 2. Sækja ferskt samhliða og uppfæra
+  let forecast = null;
+  let marine = {};
+  let marineFailed = false;
+  const [fRes, mRes] = await Promise.allSettled([fetchForecast(), fetchMarine()]);
+  if (fRes.status === "fulfilled") forecast = fRes.value;
+  if (mRes.status === "fulfilled") marine = mRes.value;
+  else marineFailed = true;
 
-  // Sjórinn í dag í haus: hiti + sjólag
-  const todayDay = days[0];
-  const wi = waveInfo(todayDay.wave);
-  document.getElementById("chip-sea").textContent =
-    todayDay.sea != null
-      ? `🌊 Sjórinn í dag: ${Math.round(todayDay.sea)}°C` +
-        (wi ? ` · öldur ${todayDay.wave.toFixed(1).replace(".", ",")} m` : "")
-      : "🌊 Sjór: engin gögn";
-
-  const suggestions = buildSuggestions(days);
-  grid.innerHTML = days.map((d, i) => renderDay(d, suggestions[i])).join("");
-
-  status.classList.remove("error");
-  if (source === "none") {
-    status.classList.add("error");
-    status.innerHTML =
-      "Ekki náðist í veðurþjónustuna — sýni dæmigert veður fyrir árstímann. " +
-      '<button class="retry-btn" id="retry">Reyna aftur</button>';
-  } else if (source === "cache") {
-    const t = new Date(cacheTime);
+  if (forecast) {
+    saveCache(forecast, marine);
+    const days = buildDays(dates, forecast, marine, today, false);
+    updateSeaChip(days[0]);
+    renderAll(grid, days);
+    setStatus(
+      status,
+      marineFailed
+        ? "Sjávargögn bárust ekki — öldur og sjávarhiti birtast ekki í bili. " + RETRY_BTN
+        : null
+    );
+  } else if (cached) {
+    const t = new Date(cached.ts);
     const hhmm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
-    status.innerHTML =
-      `Náði ekki í nýja spá — sýni síðustu spá (sótt kl. ${hhmm}). ` +
-      '<button class="retry-btn" id="retry">Reyna aftur</button>';
-  } else if (marineFailed) {
-    status.innerHTML =
-      "Sjávargögn bárust ekki — öldur og sjávarhiti birtast ekki í bili. " +
-      '<button class="retry-btn" id="retry">Reyna aftur</button>';
+    setStatus(status, `Náði ekki í nýja spá — sýni síðustu spá (sótt kl. ${hhmm}). ${RETRY_BTN}`);
   } else {
-    status.classList.add("hidden");
+    const days = buildDays(dates, {}, {}, today, false);
+    updateSeaChip(days[0]);
+    renderAll(grid, days);
+    setStatus(
+      status,
+      "Ekki náðist í veðurþjónustuna — sýni dæmigert veður fyrir árstímann. " + RETRY_BTN,
+      true
+    );
   }
 
   const retry = document.getElementById("retry");
-  if (retry) {
-    retry.addEventListener("click", () => {
-      status.classList.remove("hidden", "error");
-      status.textContent = "Sæki veðurspá fyrir Los Dolses…";
-      grid.innerHTML = "";
-      init();
-    });
-  }
+  if (retry) retry.addEventListener("click", init);
 }
 
 init();

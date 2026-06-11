@@ -68,15 +68,31 @@ function formatDate(iso) {
 
 // ---------- Veðurgögn ----------
 
+async function fetchJSON(url, tries = 3) {
+  let delay = 600;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.json();
+    } catch (err) {
+      if (i === tries - 1) throw err;
+      await new Promise((r) => setTimeout(r, delay));
+      delay *= 2;
+    }
+  }
+}
+
 async function fetchForecast() {
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
     `&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,` +
     `precipitation_probability_max,wind_speed_10m_max` +
     `&timezone=${encodeURIComponent(TZ)}&forecast_days=16`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("forecast " + res.status);
-  const data = await res.json();
+  const data = await fetchJSON(url);
+  if (!data || !data.daily || !Array.isArray(data.daily.time)) {
+    throw new Error("forecast: óvænt svar");
+  }
   const byDate = {};
   data.daily.time.forEach((date, i) => {
     byDate[date] = {
@@ -95,9 +111,10 @@ async function fetchMarine() {
   const url =
     `https://marine-api.open-meteo.com/v1/marine?latitude=${SEA_LAT}&longitude=${SEA_LON}` +
     `&hourly=sea_surface_temperature,wave_height&timezone=${encodeURIComponent(TZ)}&forecast_days=10`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("marine " + res.status);
-  const data = await res.json();
+  const data = await fetchJSON(url);
+  if (!data || !data.hourly || !Array.isArray(data.hourly.time)) {
+    throw new Error("marine: óvænt svar");
+  }
   const byDate = {};
   data.hourly.time.forEach((t, i) => {
     if (t.endsWith("T14:00")) {
@@ -108,6 +125,24 @@ async function fetchMarine() {
     }
   });
   return byDate;
+}
+
+// Síðasta vel heppnaða spá geymd í vafranum svo bilun sýni alvöru gögn, ekki ágiskun
+const CACHE_KEY = "spanarkot-data-v1";
+const CACHE_TTL = 24 * 60 * 60 * 1000;
+
+function saveCache(forecast, marine) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), forecast, marine }));
+  } catch (e) { /* full eða læst geymsla — sleppum */ }
+}
+
+function loadCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY));
+    if (c && c.forecast && Date.now() - c.ts < CACHE_TTL) return c;
+  } catch (e) { /* skemmd geymsla */ }
+  return null;
 }
 
 // ---------- UV ----------
@@ -310,14 +345,28 @@ async function init() {
 
   let forecast = {};
   let marine = {};
-  let fetchFailed = false;
+  let source = "live";
+  let marineFailed = false;
+  let cacheTime = null;
+
   try {
-    [forecast, marine] = await Promise.all([
-      fetchForecast(),
-      fetchMarine().catch(() => ({})),
-    ]);
+    forecast = await fetchForecast();
+    try {
+      marine = await fetchMarine();
+    } catch (err) {
+      marineFailed = true;
+    }
+    if (!marineFailed) saveCache(forecast, marine);
   } catch (err) {
-    fetchFailed = true;
+    const cached = loadCache();
+    if (cached) {
+      forecast = cached.forecast;
+      marine = cached.marine || {};
+      source = "cache";
+      cacheTime = cached.ts;
+    } else {
+      source = "none";
+    }
   }
 
   let lastSea = null;
@@ -329,7 +378,8 @@ async function init() {
       date,
       weather: real || { ...TYPICAL },
       approximate: !real,
-      sea: m && m.sea != null ? m.sea : lastSea != null ? lastSea : TYPICAL.sea,
+      // Sjávarhiti: alvöru gögn eða síðasta þekkta gildi — aldrei ágiskun nema á fjarlægum dögum
+      sea: m && m.sea != null ? m.sea : lastSea != null ? lastSea : real ? null : TYPICAL.sea,
       wave: m ? m.wave : null, // engin öldu-ágiskun út fyrir spána
       isToday: date === today,
       isDeparture: date === DEPARTURE,
@@ -340,18 +390,42 @@ async function init() {
   const todayDay = days[0];
   const wi = waveInfo(todayDay.wave);
   document.getElementById("chip-sea").textContent =
-    `🌊 Sjórinn í dag: ${Math.round(todayDay.sea)}°C` +
-    (wi ? ` · öldur ${todayDay.wave.toFixed(1).replace(".", ",")} m` : "");
+    todayDay.sea != null
+      ? `🌊 Sjórinn í dag: ${Math.round(todayDay.sea)}°C` +
+        (wi ? ` · öldur ${todayDay.wave.toFixed(1).replace(".", ",")} m` : "")
+      : "🌊 Sjór: engin gögn";
 
   const suggestions = buildSuggestions(days);
   grid.innerHTML = days.map((d, i) => renderDay(d, suggestions[i])).join("");
 
-  if (fetchFailed) {
+  status.classList.remove("error");
+  if (source === "none") {
     status.classList.add("error");
-    status.textContent =
-      "Ekki náðist í veðurþjónustuna — sýni dæmigert veður. Endurhlaðið síðuna til að reyna aftur.";
+    status.innerHTML =
+      "Ekki náðist í veðurþjónustuna — sýni dæmigert veður fyrir árstímann. " +
+      '<button class="retry-btn" id="retry">Reyna aftur</button>';
+  } else if (source === "cache") {
+    const t = new Date(cacheTime);
+    const hhmm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+    status.innerHTML =
+      `Náði ekki í nýja spá — sýni síðustu spá (sótt kl. ${hhmm}). ` +
+      '<button class="retry-btn" id="retry">Reyna aftur</button>';
+  } else if (marineFailed) {
+    status.innerHTML =
+      "Sjávargögn bárust ekki — öldur og sjávarhiti birtast ekki í bili. " +
+      '<button class="retry-btn" id="retry">Reyna aftur</button>';
   } else {
     status.classList.add("hidden");
+  }
+
+  const retry = document.getElementById("retry");
+  if (retry) {
+    retry.addEventListener("click", () => {
+      status.classList.remove("hidden", "error");
+      status.textContent = "Sæki veðurspá fyrir Los Dolses…";
+      grid.innerHTML = "";
+      init();
+    });
   }
 }
 

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="is">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spánarkot · Torrevieja</title>
+  <meta name="description" content="Dagskipulag fyrir síðustu dagana í Torrevieja — veður, UV, sjávarhiti og hugmyndir að ævintýrum." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀️</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <h1>Spánarkot <span class="sun">☀️</span></h1>
+      <p class="tagline">Los Dolses · Torrevieja — síðustu dagarnir fyrir heimferð</p>
+      <div class="chips" id="hero-chips">
+        <span class="chip">📍 Los Dolses, Orihuela Costa</span>
+        <span class="chip" id="chip-days">⏳ …</span>
+        <span class="chip" id="chip-sea">🌊 …</span>
+      </div>
+    </div>
+    <div class="wave" aria-hidden="true"></div>
+  </header>
+
+  <main>
+    <div id="status" class="status">Sæki veðurspá fyrir Los Dolses…</div>
+    <section id="days" class="day-grid" aria-live="polite"></section>
+  </main>
+
+  <footer>
+    <p>Veðurgögn frá <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · Búið til með ❤️ fyrir fjölskylduna</p>
+  </footer>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
